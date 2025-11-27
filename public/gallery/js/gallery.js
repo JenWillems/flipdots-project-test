@@ -47,16 +47,25 @@ async function loadGalleryData() {
   console.log('🎨 Loading gallery data from API...');
 
   try {
-    // Try multiple API endpoints (Next.js API routes first)
-    const apiUrls = [
+    const apiUrls = [];
+    const customApiBase =
+      (typeof window !== 'undefined' && (window.GALLERY_API_BASE || window.FLIPDOT_API_BASE)) || null;
+
+    if (customApiBase) {
+      const normalized = customApiBase.replace(/\/$/, '');
+      apiUrls.push(`${normalized}/api/uploads`, `${normalized}/uploads`);
+    }
+
+    apiUrls.push('https://i558110.hera.fontysict.net/api-testing/uploads');
+
+    apiUrls.push(
       '/api/uploads',
       '/uploads',
       './api/uploads',
       './uploads',
       'api/uploads',
-      'uploads',
-      'https://i558110.hera.fontysict.net/api-testing/uploads'
-    ];
+      'uploads'
+    );
 
     let uploads = null;
     for (const apiUrl of apiUrls) {

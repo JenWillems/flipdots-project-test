@@ -525,6 +525,13 @@
   box-shadow: 0 0 12px rgba(0, 255, 0, 0.4);
 }
 
+.flipdot-button.is-active {
+  border-color: #f33;
+  background: #f33;
+  color: #000;
+  box-shadow: 0 0 14px rgba(255, 0, 0, 0.45);
+}
+
 .flipdot-button:disabled {
   border-color: #666;
   color: #666;
@@ -931,6 +938,19 @@
       window.FLIPDOT_STREAM_URL ??
       (window.location.port === '4000' ? window.location.origin : 'http://localhost:4000')
     ).replace(/\/$/, '');
+    const flipdotStreamState = {
+      running: false,
+      framesSent: 0,
+      sending: false,
+      intervalId: null,
+      captureCanvas: document.createElement('canvas'),
+      captureCtx: null
+    };
+    flipdotStreamState.captureCanvas.width = canvas.width;
+    flipdotStreamState.captureCanvas.height = canvas.height;
+    flipdotStreamState.captureCtx = flipdotStreamState.captureCanvas.getContext('2d', {
+      willReadFrequently: true
+    });
 
     // Initialize the rendering engine
     initializeEngine(canvas, post, mini);
@@ -1080,11 +1100,14 @@
 
     if (flipdotCastBtn) {
       flipdotCastBtn.addEventListener('click', () => {
-        startFlipdotCast()
-          .catch((error) => {
+        if (flipdotStreamState.running) {
+          stopFlipdotStream('Flipdot stream paused');
+        } else {
+          startFlipdotStream().catch((error) => {
             console.error('[flipdot] Failed to start cast', error);
-            setFlipdotStatus(`Error: ${error.message}`, 'error');
+            setFlipdotStatus(`Error: ${error.message}`, 'error', 'Stream idle');
           });
+        }
       });
     }
 
@@ -1111,52 +1134,132 @@
     window.refreshGallery = refreshGallery;
     console.log('💡 Type refreshGallery() in console to manually refresh paintings');
 
-    async function startFlipdotCast() {
-      if (!flipdotCastBtn) {
+    async function startFlipdotStream() {
+      if (!flipdotCastBtn || flipdotStreamState.running) {
         return;
       }
 
-      const payload = {
-        frames: TARGET_FPS * 3,
-        frameDelayMs: Math.round(1000 / TARGET_FPS),
-        selector: '#v',
-        roomUrl: window.location.href
-      };
+      console.log('[flipdot] Starting live stream @', TARGET_FPS, 'FPS');
+      setFlipdotStatus('Starting flipdot stream...', 'pending', `Target: ${TARGET_FPS} FPS`);
+      flipdotCastBtn.classList.add('is-active');
+      flipdotCastBtn.textContent = '⏹ Stop Casting';
+      flipdotStreamState.running = true;
+      flipdotStreamState.framesSent = 0;
 
-      setFlipdotStatus(`Casting ${payload.frames} frames @ ${TARGET_FPS} FPS...`, 'pending');
-      flipdotCastBtn.disabled = true;
+      const tickInterval = Math.max(1, Math.round(1000 / TARGET_FPS));
+      flipdotStreamState.intervalId = setInterval(() => {
+        captureAndDispatchFrame().catch((error) => {
+          console.error('[flipdot] Frame loop failure', error);
+          setFlipdotStatus(`Error: ${error.message}`, 'error', 'Stream halted');
+          stopFlipdotStream('Flipdot caster error');
+        });
+      }, tickInterval);
 
-      console.log('[flipdot] Triggering capture payload:', payload);
+      await captureAndDispatchFrame();
+      return true;
+    }
+
+    function stopFlipdotStream(message = 'Flipdot stream stopped', { skipStatus = false } = {}) {
+      if (!flipdotStreamState.running) {
+        return;
+      }
+      clearInterval(flipdotStreamState.intervalId);
+      flipdotStreamState.intervalId = null;
+      flipdotStreamState.running = false;
+      flipdotStreamState.sending = false;
+      if (flipdotCastBtn) {
+        flipdotCastBtn.classList.remove('is-active');
+        flipdotCastBtn.textContent = '▶️ Cast to Flipdot Board';
+      }
+      if (!skipStatus) {
+        setFlipdotStatus(
+          `${message} · ${flipdotStreamState.framesSent} frames`,
+          'idle',
+          `Target: ${TARGET_FPS} FPS`
+        );
+      }
+    }
+
+    async function captureAndDispatchFrame() {
+      if (!flipdotStreamState.running || flipdotStreamState.sending) {
+        return;
+      }
+
+      const frameDataUrl = composeFlipdotFrame();
+      if (!frameDataUrl) {
+        throw new Error('Unable to capture canvas');
+      }
+
+      flipdotStreamState.sending = true;
 
       try {
-        const response = await fetch(`${FLIPDOT_STREAM_BASE}/api/push-room`, {
+        const payload = {
+          dataUrl: frameDataUrl,
+          meta: {
+            requestedFps: TARGET_FPS,
+            frameNumber: flipdotStreamState.framesSent + 1,
+            timestamp: Date.now()
+          }
+        };
+
+        const response = await fetch(`${FLIPDOT_STREAM_BASE}/api/push-frame`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         });
 
         if (!response.ok) {
-          const errorBody = await response.text();
-          throw new Error(`HTTP ${response.status} ${response.statusText}: ${errorBody}`);
+          const errorBody = await response.text().catch(() => 'Unknown error');
+          throw new Error(`HTTP ${response.status}: ${errorBody}`);
         }
 
         const result = await response.json();
-        console.log('[flipdot] Flipdot caster response:', result);
+        flipdotStreamState.framesSent += 1;
 
-        const framesSent = result.framesSent ?? payload.frames;
-        setFlipdotStatus(`Sent ${framesSent} frames to flipdot`, 'ready');
-        await refreshFlipdotStatus();
+        if (flipdotStreamState.framesSent % TARGET_FPS === 0) {
+          console.log(
+            `[flipdot] streamed ${flipdotStreamState.framesSent} frames @ ~${TARGET_FPS} FPS`,
+            result
+          );
+        }
+
+        const metaLabel = result?.bytes
+          ? `${formatBytes(result.bytes)} payload`
+          : `Target: ${TARGET_FPS} FPS`;
+
+        setFlipdotStatus(
+          `Streaming ${TARGET_FPS} FPS · frame ${flipdotStreamState.framesSent}`,
+          'ready',
+          metaLabel
+        );
       } catch (error) {
-        console.error('[flipdot] Unable to communicate with flipdot caster', error);
-        setFlipdotStatus('Flipdot caster unreachable', 'error');
+        console.error('[flipdot] Unable to dispatch frame', error);
+        stopFlipdotStream('Flipdot caster error', { skipStatus: true });
+        setFlipdotStatus(`Error: ${error.message}`, 'error', 'Stream halted');
         throw error;
       } finally {
-        flipdotCastBtn.disabled = false;
+        flipdotStreamState.sending = false;
       }
     }
 
+    function composeFlipdotFrame() {
+      const ctx = flipdotStreamState.captureCtx;
+      const target = flipdotStreamState.captureCanvas;
+      if (!ctx || !target) {
+        return null;
+      }
+      ctx.clearRect(0, 0, target.width, target.height);
+      if (canvas) {
+        ctx.drawImage(canvas, 0, 0, target.width, target.height);
+      }
+      if (post) {
+        ctx.drawImage(post, 0, 0, target.width, target.height);
+      }
+      return target.toDataURL('image/png');
+    }
+
     async function refreshFlipdotStatus({ silent = false } = {}) {
-      if (!flipdotStatusEl) {
+      if (!flipdotStatusEl || flipdotStreamState.running) {
         return;
       }
 
@@ -1181,24 +1284,43 @@
         const dispatched = live.framesDispatched ?? 0;
         const uptimeSec = live.uptimeMs ? Math.round(live.uptimeMs / 1000) : 0;
 
-        setFlipdotStatus(`Live ${fps} FPS · ${dispatched} frames · ${uptimeSec}s uptime`, 'ready');
+        setFlipdotStatus(
+          `Live ${fps} FPS · ${dispatched} frames · ${uptimeSec}s uptime`,
+          'ready',
+          `Frame interval: ${frameInterval} ms`
+        );
       } catch (error) {
         if (!silent) {
           console.warn('[flipdot] Status check failed', error);
         }
-        setFlipdotStatus('Flipdot caster offline', 'error');
+        setFlipdotStatus('Flipdot caster offline', 'error', 'Awaiting stream');
       }
     }
 
-    function setFlipdotStatus(message, state = 'idle') {
+    function setFlipdotStatus(message, state = 'idle', metaText) {
       if (!flipdotStatusEl) {
         return;
       }
       (flipdotStatusText ?? flipdotStatusEl).textContent = message;
       flipdotStatusEl.dataset.state = state;
       if (flipdotStatusMeta) {
-        flipdotStatusMeta.textContent = `Target: ${TARGET_FPS} FPS`;
+        flipdotStatusMeta.textContent = metaText ?? `Target: ${TARGET_FPS} FPS`;
       }
+    }
+
+    function formatBytes(bytes) {
+      if (typeof bytes !== 'number' || Number.isNaN(bytes)) {
+        return `Target: ${TARGET_FPS} FPS`;
+      }
+      const units = ['B', 'KB', 'MB'];
+      let size = bytes;
+      let unit = 0;
+      while (size >= 1024 && unit < units.length - 1) {
+        size /= 1024;
+        unit += 1;
+      }
+      const precision = unit === 0 ? 0 : 1;
+      return `${size.toFixed(precision)} ${units[unit]}`;
     }
   </script>
 </body>
