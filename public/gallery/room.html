@@ -863,15 +863,6 @@
             <li>📱 Up to 6 most recent uploads displayed</li>
           </ul>
 
-          <div class="flipdot-controls">
-            <button id="flipdotCastBtn" class="flipdot-button">
-              ▶️ Cast to Flipdot Board
-            </button>
-            <div id="flipdotStatus" class="flipdot-status" data-state="idle">
-              <span class="flipdot-status-text">Flipdot caster idle</span>
-              <small id="flipdotStatusMeta">Target: 15 FPS</small>
-            </div>
-          </div>
         </div>
         
         <div class="minimap-container">
@@ -900,9 +891,15 @@
   </div>
 
   <div class="nav">
-    <a href="dashboard.html">📊 Dashboard</a>
-    <a href="./">🔧 API Info</a>
-    <a href="uploads">📋 View JSON Data</a>
+    <div class="flipdot-controls">
+      <button id="flipdotCastBtn" class="flipdot-button">
+        ▶️ Cast to Flipdot Board
+      </button>
+      <div id="flipdotStatus" class="flipdot-status" data-state="idle">
+        <span class="flipdot-status-text">Flipdot caster idle</span>
+        <small id="flipdotStatusMeta">Target: 15 FPS</small>
+      </div>
+    </div>
   </div>
 
   <!-- Three.js for hardware acceleration -->
